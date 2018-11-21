@@ -23,6 +23,7 @@
 
 #include <iostream>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <errno.h>
 #include <sys/time.h>
@@ -33,6 +34,11 @@
 
 #include "serialization.h"
 #include "mpwide-macros.h"
+
+
+#ifdef PERF_TIMING
+#include "mpwide_perf.h"
+#endif
 
 // forward declarations
 class MPWPath;
@@ -63,6 +69,197 @@ static int tcpbuf_ssize = 8*1024;
 static int tcpbuf_rsize = 8*1024;
 static int relay_ssize = 8*1024;
 static int relay_rsize = 8*1024;
+
+
+/* Allinea MAP performance metrics */
+#ifdef PERF_TIMING
+struct mpwide_perf_t mpwide_perf_send    = {0};
+struct mpwide_perf_t mpwide_perf_receive = {0};
+struct mpwide_perf_t mpwide_perf_sendrecv= {0};
+struct mpwide_perf_t mpwide_perf_barrier = {0};
+struct mpwide_perf_t mpwide_perf_admin = {0};
+struct timespec mpwide_perf_last_call_start_time = {0};
+
+pthread_mutex_t perf_mutex1 = PTHREAD_MUTEX_INITIALIZER;
+
+bool mpwide_perf_is_in_call = false;
+mpwide_perf_counter_t mpwide_perf_current_call_id = MPWIDE_PERF_COUNTER_LAST;
+std::string mpwide_perf_string("");
+
+
+#endif
+
+
+#ifdef PERF_TIMING
+/** Writes a performance metric value denoted by id to the location pointed to by value. 
+ *  @param [in]  id enum denoting a counter
+ *  @param [out] value pointer to 64-bit int to write to
+ *  @return 0 on success, -1 on failure. */
+int get_perf_counter(mpwide_perf_counter_t id, uint64_t *value)
+{
+	const int SUCCESS = 0;
+	const int FAILURE = -1;
+	switch (id) {
+	case MPWIDE_PERF_COUNTER_ADMIN_CALLS: 
+		*value = mpwide_perf_admin.calls;
+		return SUCCESS;
+	case MPWIDE_PERF_COUNTER_ADMIN_DURATION:
+		*value = mpwide_perf_admin.duration;
+		return SUCCESS;
+	case MPWIDE_PERF_COUNTER_SEND_CALLS: 
+		*value = mpwide_perf_send.calls;
+		return SUCCESS;
+	case MPWIDE_PERF_COUNTER_SEND_DURATION:
+		*value = mpwide_perf_send.duration;
+		return SUCCESS;
+	case MPWIDE_PERF_COUNTER_SEND_SIZE:
+		*value = mpwide_perf_send.size;
+		return SUCCESS;
+	case MPWIDE_PERF_COUNTER_SENDRECV_CALLS: 
+		*value = mpwide_perf_sendrecv.calls;
+		return SUCCESS;
+	case MPWIDE_PERF_COUNTER_SENDRECV_DURATION:
+		*value = mpwide_perf_sendrecv.duration;
+		return SUCCESS;
+	case MPWIDE_PERF_COUNTER_SENDRECV_SEND_SIZE:
+		*value = mpwide_perf_sendrecv.size;
+		return SUCCESS;
+	case MPWIDE_PERF_COUNTER_SENDRECV_RECV_SIZE:
+		*value = mpwide_perf_sendrecv.size2;
+		return SUCCESS;
+	case MPWIDE_PERF_COUNTER_RECEIVE_CALLS: 
+		*value = mpwide_perf_receive.calls;
+		return SUCCESS;
+	case MPWIDE_PERF_COUNTER_RECEIVE_DURATION:
+		*value = mpwide_perf_receive.duration;
+		return SUCCESS;
+	case MPWIDE_PERF_COUNTER_RECEIVE_SIZE:
+		*value = mpwide_perf_receive.size;
+		return SUCCESS;
+	case MPWIDE_PERF_COUNTER_BARRIER_CALLS:
+		*value = mpwide_perf_barrier.calls;
+		return SUCCESS;
+	case MPWIDE_PERF_COUNTER_BARRIER_DURATION:
+		*value = mpwide_perf_barrier.duration;
+		return SUCCESS;
+	default:
+		assert(false);
+		*value = -1;
+		return FAILURE;
+	}
+}
+
+/** Returns the name of the performance counter. */
+const std::string& get_perf_label(mpwide_perf_counter_t counter_id)
+{
+	switch (counter_id) {
+	case MPWIDE_PERF_COUNTER_ADMIN_CALLS: 
+		static const std::string admin_calls("number of admin / connection calls");
+		return admin_calls;
+	case MPWIDE_PERF_COUNTER_ADMIN_DURATION:
+		static const std::string admin_duration("time spent in admin / connection calls (ns)");
+		return admin_duration;
+	case MPWIDE_PERF_COUNTER_SEND_CALLS: 
+		static const std::string send_calls("number of send calls");
+		return send_calls;
+	case MPWIDE_PERF_COUNTER_SEND_DURATION:
+		static const std::string send_duration("time spent in send calls (ns)");
+		return send_duration;
+	case MPWIDE_PERF_COUNTER_SEND_SIZE:
+		static const std::string send_size("total number of bytes sent");
+		return send_size;
+	case MPWIDE_PERF_COUNTER_SENDRECV_CALLS: 
+		static const std::string sendrecv_calls("number of send calls");
+		return sendrecv_calls;
+	case MPWIDE_PERF_COUNTER_SENDRECV_DURATION:
+		static const std::string sendrecv_duration("time spent in send calls (ns)");
+		return sendrecv_duration;
+	case MPWIDE_PERF_COUNTER_SENDRECV_SEND_SIZE:
+		static const std::string sendrecv_send_size("total number of sendrecv bytes sent");
+		return sendrecv_send_size;
+	case MPWIDE_PERF_COUNTER_SENDRECV_RECV_SIZE:
+		static const std::string sendrecv_recv_size("total number of sendrecv bytes received");
+		return sendrecv_recv_size;
+	case MPWIDE_PERF_COUNTER_RECEIVE_CALLS: 
+		static const std::string receive_calls("number of receive calls");
+		return receive_calls;
+	case MPWIDE_PERF_COUNTER_RECEIVE_DURATION:
+		static const std::string receive_duration("time spent in receive calls (ns)");
+		return receive_duration;
+	case MPWIDE_PERF_COUNTER_RECEIVE_SIZE:
+		static const std::string receive_size("total number of bytes received");
+		return receive_size;
+	case MPWIDE_PERF_COUNTER_BARRIER_CALLS:
+		static const std::string barrier_calls("number of barrier calls");
+		return barrier_calls;
+	case MPWIDE_PERF_COUNTER_BARRIER_DURATION:
+		static const std::string barrier_duration("time spent in barrier calls (ns)");
+		return barrier_duration;
+	default:
+		assert(false);
+		static const std::string invalid("invalid counter id!");
+		return invalid;
+	}
+}
+
+/* Returns a statically allocated char *, big enough to hold a pretty print of all the performance counters. 
+ * It is only valid until the next call to this function. */
+const char * get_perf_string(void)
+{
+	mpwide_perf_string.clear();
+	for (int i = 0; i < MPWIDE_PERF_COUNTER_LAST; i++) {
+		mpwide_perf_counter_t counter_id = static_cast<mpwide_perf_counter_t>(i);
+		const std::string& label = get_perf_label(counter_id);
+		uint64_t value;
+		bool result = get_perf_counter(counter_id, &value);
+		if (result != 0) {
+			return "ERROR: failed to get counter value";
+		}
+		mpwide_perf_string += label;
+		mpwide_perf_string += ": ";
+		std::ostringstream o; // pre C++11 way of converting uint64_t to std::string
+		o << value;
+		mpwide_perf_string += o.str();
+		mpwide_perf_string += "\n";
+	}
+	return mpwide_perf_string.c_str();
+}
+
+/** Writes the timestamp of the start of the last send/receive/barrier call to start_time, and the duration counter
+ *  id of the call to @a id (e.g. MPWIDE_PERF_COUNTER_BARRIER_DURATION, if we're in a barrier call). 
+ *  If MPWIDE is not in an API call, sets both @a start_time and @a id to NULL.
+ *  \param [out] start_time   location to contain the start of the last API call. Ignored if NULL
+ *  \param [out] id           location to contain the duration id of the current API call. Ignored if NULL
+ *  \return true if MPWIDE is inside an API call (send, receive, barrier) */
+bool is_in_call(struct timespec *start_time, mpwide_perf_counter_t *id)
+{
+	if (mpwide_perf_is_in_call) {
+		*start_time = mpwide_perf_last_call_start_time;
+
+		if (start_time) {
+			*start_time = mpwide_perf_last_call_start_time;
+		}
+		if (id) {
+			assert(mpwide_perf_current_call_id < MPWIDE_PERF_COUNTER_LAST);
+			*id = mpwide_perf_current_call_id;
+		}
+
+		return true;
+	}
+	start_time = NULL;
+	id = NULL;
+	return false;
+}
+
+/** Helper function to get the time difference between two <time.h> timespec structs in nanoseconds */
+inline uint64_t duration_ns(const struct timespec &start, const struct timespec &end)
+{
+	const uint64_t SEC_TO_NS = 1000000000;
+	uint64_t start_nanosec   = start.tv_sec * SEC_TO_NS + start.tv_nsec;
+	uint64_t end_nanosec     = end.tv_sec * SEC_TO_NS + end.tv_nsec;
+	return (end_nanosec - start_nanosec);
+}
+#endif //PERF_TIMING
 
 /* PATH-specific definitions */
 class MPWPath {
@@ -184,6 +381,8 @@ static void showSettings()
   double SendRecvTime  = 0.0;
   double PackingTime   = 0.0;
   double UnpackingTime = 0.0;
+
+
 #endif
 
 void MPW_setChunkSize(int sending, int receiving) {
@@ -519,6 +718,17 @@ int MPW_CreatePathWithoutConnect(std::string host, int server_side_base_port, co
  * or have it act as a server. 
  */
 int MPW_ConnectPath(int path_id, bool server_wait) {
+#ifdef PERF_TIMING
+   bool enabled = !(mpwide_perf_is_in_call);
+   struct timespec time_start = {0, 0}, time_end = {0, 0};
+   if(enabled){
+	mpwide_perf_is_in_call = true;
+	mpwide_perf_current_call_id = MPWIDE_PERF_COUNTER_ADMIN_DURATION;
+	clock_gettime(CLOCK_MONOTONIC, &time_start); // start timing
+	mpwide_perf_last_call_start_time = time_start;
+   }
+#endif
+
   int ret = MPW_InitStreams(paths[path_id]->streams, paths[path_id]->num_streams, server_wait);
   
   if (MPWideAutoTune && ret >= 0)
@@ -529,6 +739,14 @@ int MPW_ConnectPath(int path_id, bool server_wait) {
   }
   showSettings();
 
+#ifdef PERF_TIMING
+   if(enabled){
+	clock_gettime(CLOCK_MONOTONIC, &time_end); // finish timing
+	mpwide_perf_admin.duration += duration_ns(time_start, time_end);
+	mpwide_perf_admin.calls++;
+	mpwide_perf_is_in_call     = false;
+   }
+#endif
   return ret;
 }
 
@@ -759,6 +977,12 @@ int *InThreadSendRecv(char* const sendbuf, const long long int sendsize, char* c
       bytes_sent += n;
       #endif
 
+      #ifdef PERF_TIMING
+      pthread_mutex_lock(&perf_mutex1);
+      mpwide_perf_sendrecv.size2 += n;
+      pthread_mutex_unlock(&perf_mutex1);
+      #endif
+
       if(b == recvsize)
         mask |= MPWIDE_SOCKET_RDMASK; //don't check for read anymore
     }
@@ -774,6 +998,12 @@ int *InThreadSendRecv(char* const sendbuf, const long long int sendsize, char* c
       a += n;
       #if MONITORING == 1
       bytes_sent += n;
+      #endif
+
+      #ifdef PERF_TIMING
+      pthread_mutex_lock(&perf_mutex1);
+      mpwide_perf_sendrecv.size += n;
+      pthread_mutex_unlock(&perf_mutex1);
       #endif
 
       if(a == sendsize)
@@ -1135,6 +1365,17 @@ long long int MPW_DSendRecv( char *sendbuf, long long int sendsize,
                 char *recvbuf, long long int maxrecvsize,
                 int *channel, int nc){
 
+#ifdef PERF_TIMING
+   bool enabled = !(mpwide_perf_is_in_call);
+   struct timespec time_start = {0, 0}, time_end = {0, 0};
+   if(enabled){
+	mpwide_perf_is_in_call = true;
+	mpwide_perf_current_call_id = MPWIDE_PERF_COUNTER_SENDRECV_DURATION;
+	clock_gettime(CLOCK_MONOTONIC, &time_start); // start timing
+	mpwide_perf_last_call_start_time = time_start;
+   }
+#endif
+
   char **sendbuf2 = new char*[nc];
   long long int *sendsize2 = new long long int[nc];
 
@@ -1143,6 +1384,18 @@ long long int MPW_DSendRecv( char *sendbuf, long long int sendsize,
 
   delete [] sendbuf2;
   delete [] sendsize2;
+
+#ifdef PERF_TIMING
+   if(enabled){
+	clock_gettime(CLOCK_MONOTONIC, &time_end); // finish timing
+	mpwide_perf_sendrecv.duration += duration_ns(time_start, time_end);
+	mpwide_perf_sendrecv.calls++;
+	//mpwide_perf_sendrecv.size     += (uint64_t)sendsize;
+	//mpwide_perf_sendrecv.size2     += (uint64_t)total_recv_size;
+	mpwide_perf_is_in_call     = false;
+   }
+#endif
+
   return total_recv_size;
 }
 
@@ -1396,6 +1649,17 @@ int MPW_PSendRecv(char** sendbuf, long long int* sendsize, char** recvbuf, long 
  */
 int MPW_SendRecv( char* sendbuf, long long int sendsize, char* recvbuf, long long int recvsize, int* channel, int nc){
 
+#ifdef PERF_TIMING
+   bool enabled = !(mpwide_perf_is_in_call);
+   struct timespec time_start = {0, 0}, time_end = {0, 0};
+   if(enabled){
+	mpwide_perf_is_in_call = true;
+	mpwide_perf_current_call_id = MPWIDE_PERF_COUNTER_SENDRECV_DURATION;
+	clock_gettime(CLOCK_MONOTONIC, &time_start); // start timing
+	mpwide_perf_last_call_start_time = time_start;
+   }
+#endif
+
 #if SendRecvInputReport == 1
   std::cout << "MPW_SendRecv(sendsize=" << sendsize << ",recvsize=" << recvsize << ",nc=" << nc << ");" << std::endl;
   for(int i=0; i<nc; i++) {
@@ -1443,6 +1707,19 @@ int MPW_SendRecv( char* sendbuf, long long int sendsize, char* recvbuf, long lon
   delete [] recvbuf2;
   delete [] sendsize2;
   delete [] recvsize2;
+
+#ifdef PERF_TIMING
+   if(enabled){
+	clock_gettime(CLOCK_MONOTONIC, &time_end); // finish timing
+	mpwide_perf_sendrecv.duration += duration_ns(time_start, time_end);
+	mpwide_perf_sendrecv.calls++;
+	//mpwide_perf_sendrecv.size     += (uint64_t)sendsize;
+	//mpwide_perf_sendrecv.size2     += (uint64_t)recvsize;
+	mpwide_perf_is_in_call     = false;
+   }
+#endif
+
+
   return ret;
 }
 
@@ -1452,6 +1729,17 @@ void MPW_Barrier(int channel)
   #ifdef PERF_TIMING
     double t = GetTime();
   #endif
+
+#ifdef PERF_TIMING
+   bool enabled = !(mpwide_perf_is_in_call);
+   struct timespec time_start = {0, 0}, time_end = {0, 0};
+   if(enabled){
+	mpwide_perf_is_in_call = true;
+	mpwide_perf_current_call_id = MPWIDE_PERF_COUNTER_BARRIER_DURATION;
+	clock_gettime(CLOCK_MONOTONIC, &time_start); // start timing
+	mpwide_perf_last_call_start_time = time_start;
+   }
+#endif
 
   int i = channel;
   char s[8];
@@ -1467,6 +1755,15 @@ void MPW_Barrier(int channel)
   #ifdef PERF_TIMING
     BarrierTime += GetTime() - t;
   #endif
+
+#ifdef PERF_TIMING
+   if(enabled){
+	clock_gettime(CLOCK_MONOTONIC, &time_end); // finish timing
+	mpwide_perf_barrier.duration += duration_ns(time_start, time_end);
+	mpwide_perf_barrier.calls++;
+	mpwide_perf_is_in_call     = false;
+   }
+#endif
 }
 
 void *MPW_Barrier(void* args) {

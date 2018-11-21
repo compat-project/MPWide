@@ -2,7 +2,7 @@ INCLUDE_DIR       =
 LIBRARY_DIR       = 
 LDFLAGS         = -L.
 LDLIBS = -lMPW -lpthread
-CXXFLAGS    = -O3 -Wall -fPIC
+CXXFLAGS    = -O3 -g -fPIC -DPERF_TIMING
 TARGET_ARCH =  #-arch i386
 INSTALL_PREFIX    = .
 
@@ -34,10 +34,10 @@ install: libMPW.a libMPW.$(SO_EXT) MPWForwarder
 	cp MPWForwarder $(INSTALL_PREFIX)/bin/
 	cp MPWide.h $(INSTALL_PREFIX)/include/
 
-libMPW.a: MPWide.o Socket.o
+libMPW.a: mpwide_perf.o MPWide.o Socket.o
 	$(AR) $(ARFLAGS) $@ $^
 
-libMPW.$(SO_EXT): MPWide.o Socket.o
+libMPW.$(SO_EXT):  mpwide_perf.o MPWide.o Socket.o
 	$(CXX) $(CXXFLAGS) $(SHARED_LINK_FLAGS) $(TARGET_ARCH) -dynamiclib -o $@ $^
 #    ld -shared -soname libMPW.so.1 -o libMPW.so.1.0 -lc MPWide.o Socket.o
 
@@ -46,7 +46,7 @@ LINK_EXE = $(CXX) $(LDFLAGS) $(TARGET_ARCH) $< $(LOADLIBES) $(LDLIBS) -o $@
 MPWUnitTests: $(UnitTests_objects) libMPW.a
 	$(LINK_EXE)
 
-MPWTest: $(Test_objects) libMPW.a
+MPWTest: $(Test_objects) libMPW.so
 	$(LINK_EXE)
 
 MPWTestConcurrent: $(TestConcurrent_objects) libMPW.a

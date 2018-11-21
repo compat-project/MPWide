@@ -20,6 +20,11 @@
  * **************************************************************/
 #include <iostream>
 #include <cassert>
+#include <string>
+
+#ifdef PERF_TIMING
+#include "mpwide_perf.h"
+#endif
 
 /* Enable/disable software-based packet pacing. */
 #define MPW_PacingMode 1
@@ -124,3 +129,11 @@ extern "C" {
   void MPW_PSendRecv_c(char** sendbuf, long long int* sendsize, char** recvbuf, long long int* recvsize, int* channel, int num_channels);
 }
 
+
+#ifdef PERF_TIMING
+extern "C" {
+    int get_perf_counter(mpwide_perf_counter_t id, uint64_t *value);
+    const char * get_perf_string(void);
+    bool is_in_call(struct timespec *start_time = NULL, mpwide_perf_counter_t *id = NULL);
+}
+#endif

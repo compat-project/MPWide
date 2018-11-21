@@ -138,7 +138,9 @@ void reconfig(int size, long long int pacing_rate, long long int winsize) {
   for(int i=0; i<size; i++) {
     MPW_setWin(i, winsize);
   }
+#if MPW_PacingMode == 1
   MPW_setPacingRate(pacing_rate);
+#endif
   cout << "Pacing rate set to: " << pacing_rate << ", window size set to: " << winsize << "." << endl;
 }
 
